@@ -243,13 +243,13 @@ class Account:
         if not self.token:
             if not await self.async_login():
                 return []
-        api = 'token/device/union/list/sorted'
+        api = 'token/device/union/sortedList'
         rsp = await self.request(api, {'type': 'NONE'})
         eno = rsp.get('returnCode', 0)
         if eno == 1002:  # Illegal token
             if await self.async_login():
                 rsp = await self.request(api, {'type': 'NONE'})
-        dls = rsp.get('data', {}).get(CONF_DEVICES) or []
+        dls = rsp.get('data', [])
         if not dls:
             _LOGGER.warning('Got devices for %s failed: %s', self.phone, rsp)
         return dls
@@ -302,7 +302,7 @@ class DevicesCoordinator(DataUpdateCoordinator):
                 typ = dat.get('deviceType')
                 if typ in ['SCOOPER']:
                     dvc = ScooperDevice(dat, self)
-                elif typ in ['FEEDER']:
+                elif typ in ['FEEDER_PRO']:
                     dvc = FeederDevice(dat, self)
                 else:
                     dvc = Device(dat, self)
@@ -412,19 +412,30 @@ class FeederDevice(Device):
     @property
     def weight(self):
         return self.detail.get('weight')
+    
+    @property
+    def online(self):
+        return self.detail.get('online')
+    
+    @property
+    def total_eat(self):
+        return self.detail.get('totalFoodIntake')
 
     @property
     def error(self):
-        return self.detail.get('error')
+        current_message = self.detail.get('currentErrorMessage')
+        if '' == current_message:
+            current_message = 'NORMAL'
+        return current_message
 
     def error_attrs(self):
         return {
-            'currentErrorMessage': self.detail.get('currentErrorMessage'),
+            'error': self.detail.get('error'),
             'currentErrorType': self.detail.get('currentErrorType'),
         }
 
     async def update_device_detail(self):
-        api = 'token/device/feeder/detail'
+        api = 'token/device/feederpro/detail'
         pms = {
             'deviceId': self.id,
         }
@@ -448,6 +459,7 @@ class FeederDevice(Device):
 
     def state_attrs(self):
         return {
+            'weight_of_unit': self.detail.get('weightOfUnit'),
             'work_status': self.detail.get('foodOutStatus'),
             'auto_fill_status': self.detail.get('autoFillStatus'),
             'indicator_light_status': self.detail.get('indicatorLightStatus'),
@@ -478,7 +490,7 @@ class FeederDevice(Device):
         }
 
     async def update_logs(self):
-        api = 'token/device/feeder/stats/log/top5'
+        api = 'token/device/feederpro/stats/log/top5'
         pms = {
             'deviceId': self.id,
         }
@@ -497,9 +509,9 @@ class FeederDevice(Device):
         return rdt
 
     async def food_out(self):
-        api = 'token/device/feeder/foodOut'
+        api = 'token/device/feederpro/v2/foodOut'
         pms = {
-            'footOutNum': 5,
+            'foodOutNum': 3,
             'deviceId': self.id,
         }
         rdt = await self.account.request(api, pms, 'POST')
@@ -524,6 +536,16 @@ class FeederDevice(Device):
                 'device_class': SensorDeviceClass.WEIGHT,
                 'unit': UnitOfMass.GRAMS,
                 "state_class": SensorStateClass.MEASUREMENT
+            },
+            'total_eat': {
+                'icon': 'mdi:weight-gram',
+                'state': self.total_eat,
+                'device_class': SensorDeviceClass.WEIGHT,
+                'unit': UnitOfMass.GRAMS,
+                "state_class": SensorStateClass.MEASUREMENT
+            },
+            "online": {
+                "icon": "mdi:cloud",
             },
             'error': {
                 'icon': 'mdi:alert-circle',
@@ -582,13 +604,19 @@ class ScooperDevice(Device):
 
     def state_attrs(self):
         return {
-            'work_status': self.detail.get('workStatus'),
-            'alarm_status': self.detail.get('alarmStatus'),
-            'atmosphere_status': self.detail.get('atmosphereStatus'),
-            'weight': self.detail.get('weight'),
-            'key_lock': self.detail.get('keyLock'),
-            'safe_time': self.detail.get('safeTime'),
-            'pave_second': self.detail.get('catLitterPaveSecond'),
+            "mac": self.mac,
+            "work_status": self.detail.get("workStatus"),
+            "alarm_status": self.detail.get("alarmStatus"),
+            "weight": self.detail.get("weight"),
+            "litter_weight_kg": self.detail.get("catLitterWeight"),
+            "total_clean_times": int(self.detail.get("inductionTimes", 0))
+            + int(self.detail.get("manualTimes", 0)),
+            "manual_clean_times": self.detail.get("manualTimes"),
+            "key_lock": self.detail.get("keyLock"),
+            "safe_time": self.detail.get("safeTime"),
+            "pave_second": self.detail.get("catLitterPaveSecond"),
+            "deodorant_countdown": self.detail.get("deodorantCountdown"),
+            "litter_countdown": self.detail.get("litterCountdown"),
         }
 
     @property
@@ -633,6 +661,10 @@ class ScooperDevice(Device):
         }
 
     @property
+    def online(self):
+        return self.detail.get('online')
+
+    @property
     def _last_log(self):
         log = {}
         if self.logs:
@@ -645,6 +677,22 @@ class ScooperDevice(Device):
         if not log:
             return None
         return f"{log.get('time')} {log.get('event')} {log.get('firstSection')} {log.get('secondSection')}".strip()
+    
+    @property
+    def litter_weight(self) -> float:
+        """Return the litter weight."""
+        litter_weight = 0
+        try:
+            catLitterWeight = self.detail.get(
+                "catLitterWeight", self.empty_litter_box_weight
+            )
+            litter_weight = catLitterWeight - self.empty_litter_box_weight
+            self._litter_weight_during_day.append(litter_weight)
+
+        except Exception as exc:
+            _LOGGER.error("Got litter weight failed: %s", exc)
+
+        return litter_weight
 
     def last_log_attrs(self):
         log = self._last_log
@@ -756,6 +804,9 @@ class ScooperDevice(Device):
                 'state': self.catLitterWeight,
                 'unit': PERCENTAGE,
                 "state_class": SensorStateClass.MEASUREMENT
+            },
+            "online": {
+                "icon": "mdi:cloud",
             },
             'error': {
                 'icon': 'mdi:alert-circle',
