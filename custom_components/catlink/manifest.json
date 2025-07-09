@@ -1,9 +1,9 @@
 {
   "domain": "catlink",
   "name": "CatLink",
-  "version": "0.0.1",
-  "documentation": "https://github.com/hasscc/catlink",
-  "issue_tracker": "https://github.com/hasscc/catlink/issues",
+  "version": "0.0.2",
+  "documentation": "https://github.com/Pramy/catlink",
+  "issue_tracker": "https://github.com/Pramy/catlink/issues",
   "requirements": [],
   "codeowners": [],
   "config_flow": true,

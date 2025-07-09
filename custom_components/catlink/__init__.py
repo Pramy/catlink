@@ -83,10 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         _LOGGER.debug(f"Registering device: {dvc.id}, {dvc.name}")
 
-    for platform in SUPPORTED_DOMAINS:
-        hass.async_create_task(
-            hass.config_entries.async_forward_entry_setup(entry, platform)
-        )
+    await hass.config_entries.async_forward_entry_setups(entry, SUPPORTED_DOMAINS)
 
     return True
 
@@ -356,14 +353,7 @@ class Device:
     async def async_init(self):
         await self.update_device_detail()
         self.logs = []
-        self.coordinator_logs = DataUpdateCoordinator(
-            self.account.hass,
-            _LOGGER,
-            name=f'{DOMAIN}-{self.id}-logs',
-            update_method=self.update_logs,
-            update_interval=datetime.timedelta(minutes=1),
-        )
-        await self.coordinator_logs.async_config_entry_first_refresh()
+        await self.update_logs()
 
     async def update_device_detail(self):
         pass
@@ -399,6 +389,10 @@ class Device:
     @property
     def name(self):
         return self.data.get('deviceName', '')
+    
+    @property
+    def online(self):
+        return self.data.get('onlineStatus', False)
 
     @property
     def firmwareVersion(self):
@@ -414,24 +408,21 @@ class FeederDevice(Device):
         return self.detail.get('weight')
     
     @property
-    def online(self):
-        return self.detail.get('online')
-    
-    @property
     def total_eat(self):
         return self.detail.get('totalFoodIntake')
 
     @property
     def error(self):
-        current_message = self.detail.get('currentErrorMessage')
+        current_message = self.data.get('freshExtendInfo', {}).get('alertMsgDesc', '')
         if '' == current_message:
             current_message = 'NORMAL'
         return current_message
 
     def error_attrs(self):
         return {
-            'error': self.detail.get('error'),
+            'detailError': self.detail.get('error'),
             'currentErrorType': self.detail.get('currentErrorType'),
+            'currentErrorMessage': self.detail.get('currentErrorMessage'),
         }
 
     async def update_device_detail(self):
@@ -659,10 +650,6 @@ class ScooperDevice(Device):
             '00': 'pause',
             '01': 'start',
         }
-
-    @property
-    def online(self):
-        return self.detail.get('online')
 
     @property
     def _last_log(self):
